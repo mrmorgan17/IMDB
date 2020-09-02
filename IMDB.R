@@ -1,35 +1,16 @@
----
-title: "IMDB Ratings"
-author: "Matthew Morgan"
-date: "8/24/2020"
-output: html_document
----
-
-```{r setup}
 library(caret)
 library(dplyr)
-```
 
-```{r}
 train <- read.csv("IMDBTrain.csv", header = TRUE)
 test <- read.csv("IMDBTest.csv", header = TRUE)
 sample <- read.csv("SampleSubmission.csv", header = TRUE)
-```
 
-```{r}
 train <- train %>% na.omit() %>% select(-movie_imdb_link)
-```
 
-```{r}
 fit <- randomForest::randomForest(train$imdb_score ~., data = train)
-```
 
-```{r}
 submission <- data.frame(Id = sample$Id, Predicted = predict(fit, test))
 
 submission[is.na(submission$Predicted),]$Predicted <- mean(submission[!is.na(submission$Predicted),]$Predicted)
 
 write.csv(submission, "rf.csv", row.names = FALSE)
-```
-
-
