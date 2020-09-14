@@ -78,12 +78,9 @@ imdb <- imdb %>%
 
 # Using categorical variables can lead to the Curse of Dimensionality, best to reduce the number of explanatory variables.
 
-## Median imputation for num_critic_for_reviews
-# imdb[is.na(imdb[["num_critic_for_reviews"]]), "num_critic_for_reviews"] <-
-#   median(x = imdb[["num_critic_for_reviews"]], na.rm = TRUE)
-imdb <- imdb %>% 
-  mutate(num_critic_for_reviews = replace(num_critic_for_reviews,
-                                        is.na(num_critic_for_reviews),
+## Stochastic Regression imputation for num_critic_for_reviews
+imdb <- imdb %>%
+  mutate(num_critic_for_reviews = replace(num_critic_for_reviews, is.na(num_critic_for_reviews), 
                                         median(num_critic_for_reviews, na.rm = TRUE)))
 
 # Median imputation again might decrease correlation
@@ -94,30 +91,43 @@ missing_languages <- c("English", "None", "None", "None", "None")
 imdb <- imdb %>% 
   mutate(language = replace(language, is.na(language), missing_languages))
 
+## Lots of very small categories for language so combine into English vs. Non-English
+imdb <- imdb %>%
+  mutate(language = fct_collapse(language, Other = unique(language[language != "English"])))
+table(imdb$language) 
+
 ## Content-rating - collapse GP --> PG and create "other"
 ## X --> NC-17, TV-?? --> TV, M--> PG13
 imdb <- imdb %>%
-  mutate(content_rating = fct_explicit_na(content_rating, na_level = "Unknown")) %>%
+  mutate(content_rating = fct_explicit_na(content_rating, na_level = "Not Rated")) %>%
   mutate(content_rating = fct_collapse(content_rating, PG = c("GP", "PG"),
                                      NC17 = c("X", "NC-17"),
                                      TV = c("TV-14", "TV-G", "TV-PG"),
                                      PG13 = c("PG-13","M")))
 table(imdb$content_rating)
 
-## Genres - get the main genre and number of genres assigned
-imdb <- imdb %>% mutate(main_genre = (str_split(genres, "\\|") %>%
-                                      sapply(., FUN = function(x) {x[1]})),
-                        num_genre = (str_split(genres, "\\|") %>%
-                                     sapply(., FUN = length)))
-table(imdb$main_genre) 
+## Genres - create dummy varaibles for each genre and number of genres assigned
+imdb <- imdb %>% mutate(num_genre = (str_split(genres, "\\|") %>%
+                                       sapply(., FUN = length)))
+
+dummy_genres <- imdb$genres %>% sapply(function(x){unlist(str_split(x, '\\|'))}) %>% qdapTools::mtabulate()
+colnames(dummy_genres) <- paste0('Genre_', colnames(dummy_genres))
+rownames(dummy_genres) <- c()
+imdb <- cbind(imdb, dummy_genres)
+
+# Film-Noir, News, and Short all have < 10 movies so comgining these into an other category
+imdb <- imdb %>% mutate(Genre_Other = `Genre_Film-Noir` + Genre_News + Genre_Short) %>% 
+  select(-`Genre_Film-Noir`, -Genre_News, -Genre_Short)
+  
+
+
 # Now some observations only have 1 instance, this means NO variability => overfitting
 
-#Some genres only have 1 movie so create "other" category
-#that contains all categories with less than 10 movies
-other.cat <- imdb %>% group_by(main_genre) %>% 
-  summarize(n = n()) %>% filter(n < 10) %>% pull(main_genre)
-imdb <- imdb %>%
-  mutate(main_genre = fct_collapse(main_genre, Other = other.cat))
+# Some genres only have 1 movie so create "other" category that contains all categories with less than 10 movies
+# other.cat <- imdb %>% group_by(main_genre) %>% 
+#   summarize(n = n()) %>% filter(n < 10) %>% pull(main_genre)
+# imdb <- imdb %>%
+#   mutate(main_genre = fct_collapse(main_genre, Other = other.cat))
 
 # There is a somewhat strong correlation between budget and gross, so we will
 # impute the budget first since budget has fewer missing values and then use the
@@ -127,8 +137,9 @@ imdb <- imdb %>%
 # sqrt(budget) to remove negative predictions
 budget.lm <- lm(sqrt(budget) ~ num_critic_for_reviews + duration + num_voted_users +
                   cast_total_facebook_likes + title_year +
-                  movie_facebook_likes + main_genre, data = imdb)
-budget.preds <- (predict(budget.lm, newdata = (imdb %>% filter(is.na(budget)))))^2
+                  movie_facebook_likes + num_genre, data = imdb)
+budget.preds <- (predict(budget.lm, newdata = (imdb %>% filter(is.na(budget)))) + 
+                   rnorm(sum(is.na(imdb$budget)), 0, sigma(budget.lm)))^2
 imdb <- imdb %>%
   mutate(budget = replace(budget, is.na(budget), budget.preds))
 
@@ -139,8 +150,8 @@ imdb <- imdb %>%
 # LM plus add in some noise rnorm(sum(is.na(imdb$gross))), no bias in correlation
 gross.lm <- lm(sqrt(gross) ~ num_critic_for_reviews + duration + num_voted_users +
                  cast_total_facebook_likes + title_year +
-                 movie_facebook_likes + main_genre + budget, data = imdb)
-gross.preds <- (predict(gross.lm, newdata = (imdb %>% filter(is.na(gross))))+
+                 movie_facebook_likes + num_genre + budget, data = imdb)
+gross.preds <- (predict(gross.lm, newdata = (imdb %>% filter(is.na(gross)))) + 
                   rnorm(sum(is.na(imdb$gross)), 0, sigma(gross.lm)))^2
 imdb <- imdb %>%
   mutate(gross = replace(gross, is.na(gross), gross.preds))
@@ -154,11 +165,35 @@ all.actors <- imdb %>% select(actor_1_name, actor_2_name, actor_3_name) %>% do.c
 actors.freq <- data.frame(actor = all.actors) %>% filter(!is.na(actor)) %>%
   group_by(actor) %>% summarize(n = n()) %>%
   arrange(desc(n))
-top.actors <- actors.freq %>% filter(n > 10) %>% pull(actor)
+
+names(actors.freq)[1] <- "actor_1_name"
+names(actors.freq)[2] <- "actor_1_n_movies"
+
 imdb <- imdb %>%
-  mutate(num_top_actors = (ifelse(actor_1_name %in% top.actors, 1, 0) +
-                           ifelse(actor_2_name %in% top.actors, 1, 0) +
-                           ifelse(actor_3_name %in% top.actors, 1, 0)))
+  left_join(actors.freq)
+
+names(actors.freq)[1] <- "actor_2_name"
+names(actors.freq)[2] <- "actor_2_n_movies"
+
+imdb <- imdb %>%
+  left_join(actors.freq) 
+
+names(actors.freq)[1] <- "actor_3_name"
+names(actors.freq)[2] <- "actor_3_n_movies"
+
+imdb <- imdb %>%
+  left_join(actors.freq) 
+
+imdb <- imdb %>% 
+  mutate(actor_1_n_movies = (ifelse(is.na(actor_1_n_movies), 0, actor_1_n_movies)),
+         actor_2_n_movies = (ifelse(is.na(actor_2_n_movies), 0, actor_2_n_movies)),
+         actor_3_n_movies = (ifelse(is.na(actor_3_n_movies), 0, actor_3_n_movies)))
+
+# top.actors <- actors.freq %>% filter(n > 10) %>% pull(actor)
+# imdb <- imdb %>%
+#   mutate(num_top_actors = (ifelse(actor_1_name %in% top.actors, 1, 0) +
+#                            ifelse(actor_2_name %in% top.actors, 1, 0) +
+#                            ifelse(actor_3_name %in% top.actors, 1, 0)))
 
 ## facebook_like columns -  we made a column num_pop_actors for the total number of popular actors 
 ## in a movie based off of their Facebook likes. With this, we decided to throw 
@@ -172,7 +207,7 @@ actors.likes <- data.frame(actor = all.actors, likes = actor.likes) %>%
 pop.actors <- actors.likes %>% filter(likes > quantile(likes, probs = 0.99)) %>%
   pull(actor)
 imdb <- imdb %>%
-  mutate(num_top_actors = (ifelse(actor_1_name %in% pop.actors, 1, 0) +
+  mutate(num_pop_actors = (ifelse(actor_1_name %in% pop.actors, 1, 0) +
                            ifelse(actor_2_name %in% pop.actors, 1, 0) +
                            ifelse(actor_3_name %in% pop.actors, 1, 0)))
 
@@ -186,7 +221,7 @@ imdb <- imdb %>% select(-cast_total_facebook_likes, -movie_imdb_link, -facenumbe
                         -plot_keywords, -country, -movie_facebook_likes, -director_facebook_likes,
                         -actor_1_name, -actor_2_name, -actor_3_name, -actor_1_facebook_likes,
                         -actor_2_facebook_likes, -actor_3_facebook_likes, -genres, 
-                        -cast_total_facebook_likes)
+                        -cast_total_facebook_likes, -num_user_for_reviews)
 plot_missing(imdb)
 
 ####################################

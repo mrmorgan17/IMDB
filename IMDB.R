@@ -1,128 +1,99 @@
 # Necessary libraries
 library(tidyverse)
+library(caret)
+library(xgboost)
 
-# Read in data
-train <- read_csv("IMDBTrain.csv")
-test <- read_csv("IMDBTest.csv")
+imdb.clean <- read_csv('CleanedIMDBData.csv') %>% mutate_at(vars(movie_title, language, content_rating), factor)
 
-# Merge the training and test data
-names(test)[names(test) == 'Id'] <- 'Id'
-imdb <- bind_rows(train = train, test = test, .id = 'Set')
+# IVTrans <- dummyVars(imdb_score ~ . -movie_title -Set, data = imdb.clean)
+# imdb.iv <- predict(IVTrans, newdata = imdb.clean) %>% as.data.frame() %>% bind_cols(., imdb.clean %>% select(movie_title, Set, imdb_score))
 
-# Exploratory Data Analysis
+# pcTrans <- preProcess(x = imdb %>% select(-imdb_score), method = 'pca')
+# imdb.pca <- predict(pcTrans, newdata = imdb.pca)
+# plot_correlation(imdb.pca, type = 'continuous', cor_args = list(use = 'pairwise.'))
 
-# Scatterplot of Budget vs. Score
-ggplot(data = train, mapping = aes(x = budget, y = imdb_score)) + geom_point()
-# Budget is in local currency need to convert to a single currency
+# Center and Scaling
+# trans.cs <- preProcess(x = imdb %>% select(-imdb_score), method = c('center', 'scale'))
+# imdb.cs <- predict(trans.cs, newdata = imdb)
 
-ggplot(data = train, mapping = aes(x = gross, y = imdb_score)) + geom_point()
+# Use one or the other
 
-with(train, cor(gross, imdb_score, use = 'complete.obs'))
+# trans.01 <- preProcess(x = imdb %>% select(-imdb_score), method = 'range', rangeBounds = c(0, 1))
+# imdb.01 <- predict(trans.01, newdata = imdb)
 
-train[is.na(train$director_facebook_likes),]$director_facebook_likes <- round(mean(train$director_facebook_likes, na.rm = TRUE), digits = 0)
+imdb.train <- imdb.clean %>% filter(Set == 'train') %>% select(-c(Set, movie_title))
+imdb.test <- imdb.clean %>% filter(Set == 'test') %>% select(-Set)
 
-# Putting in 0 liked for the movies that had no 3rd actor
-train[is.na(train$actor_3_facebook_likes) & is.na(train$actor_3_name),]$actor_3_facebook_likes <- 0
+xgbTree.model <- train(imdb_score ~ ., 
+                       data = imdb.train, # Using the training set to create the model
+                       method = 'xgbTree', # Defining the model to be k-Nearest Neighbors
+                       trControl = trainControl(method = "cv", number = 10), # Defining the resampling procedure that will be used for the model
+                       preProcess = c('center', 'scale', 'zv'),
+                       tuneGrid = expand.grid(nrounds = 115,
+                                              max_depth = 3,
+                                              eta = .195,
+                                              gamma = 0,
+                                              colsample_bytree = .58,
+                                              min_child_weight = 1,
+                                              subsample = .675
+                                              ),
+                       maximize = FALSE # Ensuring that we minimize RMSE
+                       )
 
-train[is.na(train$actor_1_facebook_likes),]$actor_1_facebook_likes <- round(mean(train$actor_1_facebook_likes, na.rm = TRUE), digits = 0)
+xgbTree.model
 
-train[is.na(train$actor_2_name),]$actor_2_name <- "None"
+caret.submission <- data.frame(Id = imdb.test %>% pull(movie_title), Predicted = predict(xgbTree.model, imdb.test))
+write.csv(caret.submission, "caret-preds.csv", row.names = FALSE)
 
-(imdb %>% select(c(actor_1_name, actor_2_name, actor_3_name, actor_1_facebook_likes, actor_2_facebook_likes, actor_3_facebook_likes, cast_total_facebook_likes, movie_facebook_likes)))
+# train and test data must be the exact same in terms of number of columns and order
 
-# Combining and removing duplicates
-top_actors <- c(data.frame(sort(with(imdb, table(actor_1_name)), decreasing = TRUE)) %>% pull(actor_1_name) %>% head(20) %>% as.character(), # Creating a list of top actor_1s based on the numbers of movies they were in (top 20)
-                data.frame(sort(with(imdb, table(actor_2_name)), decreasing = TRUE)) %>% pull(actor_2_name) %>% head(20) %>% as.character(),
-                data.frame(sort(with(imdb, table(actor_3_name)), decreasing = TRUE)) %>% pull(actor_3_name) %>% head(20) %>% as.character()
-                ) %>% unique()
+test.id <- imdb.test %>% select(movie_title) 
 
-# Removing None
-top_actors <- top_actors[top_actors != 'None']
+imdb.test$movie_title <- NULL
 
-# Initializing vectors
-top_actor1 <- numeric()
-top_actor2 <- numeric()
-top_actor3 <- numeric()
+train.y <- imdb.train$imdb_score
 
-for(i in 1:nrow(imdb)) {
-  # Going through the actor_1_name column to see which of our previously identified top actors were in a movie as actor_1
-  top_actor1[i] <- ifelse(imdb[i,]$actor_1_name %in% top_actors, 1, 0)
-  # Going through the actor_2_name column to see which of our previously identified top actors were in a movie as actor_2
-  top_actor2[i] <- ifelse(imdb[i,]$actor_2_name %in% top_actors, 1, 0)
-  # Going through the actor_3_name column to see which of our previously identified top actors were in a movie as actor_3
-  top_actor3[i] <- ifelse(imdb[i,]$actor_3_name %in% top_actors, 1, 0)
-}
+imdb.train$imdb_score <- NULL
+imdb.test$imdb_score <- NULL
 
-# Combining all the top_actors columns
-num_top_actors <- apply(cbind(top_actor1, top_actor2, top_actor3), 1, sum)
+# Creating data.matrix
+trainM <- data.matrix(imdb.train, rownames.force = NA)
 
-##### Popularity #####
-# Clean up columns first
-for(i in 1:dim(imdb)[1]) {
-  if(is.na(imdb[i, "actor_1_name"])) {imdb[i, "actor_1_name"] = "None"}
-  if(is.na(imdb[i, "actor_2_name"])) {imdb[i, "actor_2_name"] = "None"}
-  if(is.na(imdb[i, "actor_3_name"])) {imdb[i, "actor_3_name"] = "None"}
-  if(is.na(imdb[i, "actor_1_facebook_likes"])) {imdb[i, "actor_1_facebook_likes"] = 0}
-  if(is.na(imdb[i, "actor_2_facebook_likes"])) {imdb[i, "actor_2_facebook_likes"] = 0}
-  if(is.na(imdb[i, "actor_3_facebook_likes"])) {imdb[i, "actor_3_facebook_likes"] = 0}
-}
+# Creating DMarix for xgboost 
+dtrain <- xgb.DMatrix(data = trainM, label = train.y, missing = NaN)
 
-# For each Actor column, extract just the name and FB likes. Change the COL names so they can be combined.
-actor1_likes <- imdb[, c("actor_1_facebook_likes", "actor_1_name")] %>% distinct_all() #1418 distinct actor 1s
-colnames(actor1_likes) <- c("likes", "actor_name")
-actor2_likes <- imdb[, c("actor_2_facebook_likes", "actor_2_name")] %>% distinct_all() #2108 distinct actor 2s
-colnames(actor2_likes) <- c("likes", "actor_name")
-actor3_likes <- imdb[, c("actor_3_facebook_likes", "actor_3_name")] %>% distinct_all() #2488 distinct actor 1s
-colnames(actor3_likes) <- c("likes", "actor_name")
+watchlist <- list(trainM = dtrain)
 
-# Combine all three sets and remove duplicates. This 'popularity' set is all actors and their FB likes.
-popularity <- bind_rows(actor1_likes, actor2_likes, actor3_likes) %>% distinct_all()
+param <- list(objective = "reg:squarederror", 
+              booster = "gbtree",
+              eval_metric = "rmse",
+              eta = .025,
+              max_depth = 6,
+              subsample = .66667,
+              colsample_bytree = .55
+)
 
-# Subset 'popularity' by x%. There are 4315 distinct actors in the data, so the top x% should be...
-percent <- .01
-popularity <- popularity[order(-popularity$likes), ]
-popularity <- popularity[1:(ceiling(dim(popularity)[1]*percent)),]
-pop_actors <- popularity$actor_name
-# These names and likes correspond to cast total likes pretty well, so we could probably scrap that column
+clf <- xgb.cv(params = param, 
+              data = dtrain, 
+              nrounds = 1000,
+              nfold = 10,
+              watchlist = watchlist,
+              verbose = 1,
+              print_every_n = 10,
+              early_stopping_rounds = 20,
+              maximize = FALSE
+)
 
-# Create an indicator variable for 'popular actor'
-# for(i in 1:dim(imdb)[1]){
-#  if(imdb[i, "actor_1_name"] %in% pop_actors | imdb[i, "actor_2_name"] %in% pop_actors |
-#     imdb[i, "actor_3_name"] %in% pop_actors) {
-#    imdb[i, "popular_actor"] <- 1
-#  }
-#  else {
-#    imdb[i, "popular_actor"] <- 0
-#  }
-# }
+xgb.model <- xgb.train(params = param, 
+                       data = dtrain, 
+                       nrounds = bestRound,
+                       watchlist = watchlist,
+                       verbose = 1,
+                       maximize = FALSE
+)
 
-pop_actor1 <- numeric()
-pop_actor2 <- numeric()
-pop_actor3 <- numeric()
-
-for(i in 1:nrow(imdb)) {
-  # Going through the actor_1_name column to see which of our previously identified top actors were in a movie as actor_1
-  if (imdb[i,]$actor_1_name %in% pop_actors) {
-    pop_actor1[i] <- 1
-  } else {
-    pop_actor1[i] <- 0
-  }
-  # Going through the actor_2_name column to see which of our previously identified top actors were in a movie as actor_2
-  if (imdb[i,]$actor_2_name %in% pop_actors) {
-    pop_actor2[i] <- 1
-  } else {
-    pop_actor2[i] <- 0
-  }
-  # Going through the actor_3_name column to see which of our previously identified top actors were in a movie as actor_3
-  if (imdb[i,]$actor_3_name %in% pop_actors) {
-    pop_actor3[i] <- 1
-  } else {
-    pop_actor3[i] <- 0
-  }
-}
-
-# Combining all the pop_actors columns
-pop_actors_df <- cbind(pop_actor1, pop_actor2, pop_actor3)
-
-# Creating a new variable of for the total number of popular actors in a movie 
-num_pop_actors <- apply(pop_actors_df, 1, sum)
+testM <- data.matrix(imdb.test, rownames.force = NA)
+preds <- predict(xgb.model, testM)
+xgboost.submission <- data.frame(Id = test.id, Predicted = preds)
+names(xgboost.submission)[1] <- 'Id'
+write.csv(xgboost.submission, "xgboost-preds.csv", row.names = FALSE)
