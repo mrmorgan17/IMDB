@@ -8,8 +8,8 @@ imdb.clean <- read_csv('CleanedIMDBData.csv') %>% mutate_at(vars(movie_title, la
 # IVTrans <- dummyVars(imdb_score ~ . -movie_title -Set, data = imdb.clean)
 # imdb.iv <- predict(IVTrans, newdata = imdb.clean) %>% as.data.frame() %>% bind_cols(., imdb.clean %>% select(movie_title, Set, imdb_score))
 
-# pcTrans <- preProcess(x = imdb %>% select(-imdb_score), method = 'pca')
-# imdb.pca <- predict(pcTrans, newdata = imdb.pca)
+# pcTrans <- preProcess(x = imdb.clean %>% select(-imdb_score), method = 'pca')
+# imdb.pca <- predict(pcTrans, newdata = imdb.clean)
 # plot_correlation(imdb.pca, type = 'continuous', cor_args = list(use = 'pairwise.'))
 
 # Center and Scaling
@@ -18,24 +18,28 @@ imdb.clean <- read_csv('CleanedIMDBData.csv') %>% mutate_at(vars(movie_title, la
 
 # Use one or the other
 
-# trans.01 <- preProcess(x = imdb %>% select(-imdb_score), method = 'range', rangeBounds = c(0, 1))
-# imdb.01 <- predict(trans.01, newdata = imdb)
+# trans.01 <- preProcess(x = imdb.clean %>% select(-imdb_score), method = 'range', rangeBounds = c(0, 1))
+# imdb.01 <- predict(trans.01, newdata = imdb.clean)
 
 imdb.train <- imdb.clean %>% filter(Set == 'train') %>% select(-c(Set, movie_title))
 imdb.test <- imdb.clean %>% filter(Set == 'test') %>% select(-Set)
+
+###########
+## caret ##
+###########
 
 xgbTree.model <- train(imdb_score ~ ., 
                        data = imdb.train, # Using the training set to create the model
                        method = 'xgbTree', # Defining the model to be k-Nearest Neighbors
                        trControl = trainControl(method = "cv", number = 10), # Defining the resampling procedure that will be used for the model
                        preProcess = c('center', 'scale', 'zv'),
-                       tuneGrid = expand.grid(nrounds = 115,
-                                              max_depth = 3,
-                                              eta = .195,
+                       tuneGrid = expand.grid(nrounds = 500, #115
+                                              max_depth = 6, #3
+                                              eta = .025, #.195
                                               gamma = 0,
-                                              colsample_bytree = .58,
+                                              colsample_bytree = .58, #.58
                                               min_child_weight = 1,
-                                              subsample = .675
+                                              subsample = .6666667 #.675
                                               ),
                        maximize = FALSE # Ensuring that we minimize RMSE
                        )
@@ -45,14 +49,22 @@ xgbTree.model
 caret.submission <- data.frame(Id = imdb.test %>% pull(movie_title), Predicted = predict(xgbTree.model, imdb.test))
 write.csv(caret.submission, "caret-preds.csv", row.names = FALSE)
 
-# train and test data must be the exact same in terms of number of columns and order
+# The train and test data must be the exact same in terms of number of columns and order
 
+#############
+## xgboost ##
+#############
+
+# Isolating the 'Id' column for the submission file
 test.id <- imdb.test %>% select(movie_title) 
 
+# Removing the column
 imdb.test$movie_title <- NULL
 
+# Isolating the response variable
 train.y <- imdb.train$imdb_score
 
+# Removing the response variable column
 imdb.train$imdb_score <- NULL
 imdb.test$imdb_score <- NULL
 
@@ -71,7 +83,7 @@ param <- list(objective = "reg:squarederror",
               max_depth = 6,
               subsample = .66667,
               colsample_bytree = .55
-)
+              )
 
 clf <- xgb.cv(params = param, 
               data = dtrain, 
@@ -82,7 +94,7 @@ clf <- xgb.cv(params = param,
               print_every_n = 10,
               early_stopping_rounds = 20,
               maximize = FALSE
-)
+              )
 
 xgb.model <- xgb.train(params = param, 
                        data = dtrain, 
@@ -90,7 +102,7 @@ xgb.model <- xgb.train(params = param,
                        watchlist = watchlist,
                        verbose = 1,
                        maximize = FALSE
-)
+                       )
 
 testM <- data.matrix(imdb.test, rownames.force = NA)
 preds <- predict(xgb.model, testM)
