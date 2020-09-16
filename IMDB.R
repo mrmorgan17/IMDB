@@ -5,8 +5,8 @@ library(xgboost)
 
 imdb.clean <- read_csv('CleanedIMDBData.csv') %>% mutate_at(vars(movie_title, language, content_rating), factor)
 
-IVTrans <- dummyVars(imdb_score ~ . -movie_title -Set, data = imdb.clean)
-imdb.iv <- predict(IVTrans, newdata = imdb.clean) %>% as.data.frame() %>% bind_cols(., imdb.clean %>% select(movie_title, Set, imdb_score))
+# IVTrans <- dummyVars(imdb_score ~ . -movie_title -Set, data = imdb.clean)
+# imdb.iv <- predict(IVTrans, newdata = imdb.clean) %>% as.data.frame() %>% bind_cols(., imdb.clean %>% select(movie_title, Set, imdb_score))
 
 # pcTrans <- preProcess(x = imdb.clean %>% select(-imdb_score), method = 'pca')
 # imdb.pca <- predict(pcTrans, newdata = imdb.clean)
@@ -48,28 +48,6 @@ xgbTree.model
 
 caret.submission <- data.frame(Id = imdb.test %>% pull(movie_title), Predicted = predict(xgbTree.model, imdb.test))
 write.csv(caret.submission, "caret-preds.csv", row.names = FALSE)
-
-xgbDART.model <- train(imdb_score ~ ., 
-                       data = imdb.train, # Using the training set to create the model
-                       method = 'xgbDART', # Defining the model to be k-Nearest Neighbors
-                       trControl = trainControl(method = "cv", number = 10), # Defining the resampling procedure that will be used for the model
-                       tuneGrid = expand.grid(nrounds = 500,
-                                              max_depth = 6,
-                                              eta = .025,
-                                              gamma = 0,
-                                              subsample = .66667,
-                                              colsample_bytree = .55,
-                                              rate_drop = .01,
-                                              skip_drop = .05,
-                                              min_child_weight = 1
-                                              ),
-                       maximize = FALSE # Ensuring that we minimize RMSE
-)
-
-xgbDART.model
-
-xgbDART.submission <- data.frame(Id = imdb.test %>% pull(movie_title), Predicted = predict(xgbDART.model, imdb.test))
-write.csv(xgbDART.submission, "xgbDART-preds.csv", row.names = FALSE)
 
 # The train and test data must be the exact same in terms of number of columns and order
 
