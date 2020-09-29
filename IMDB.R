@@ -49,6 +49,21 @@ xgbTree.model
 caret.submission <- data.frame(Id = imdb.test %>% pull(movie_title), Predicted = predict(xgbTree.model, imdb.test))
 write.csv(caret.submission, "caret-preds.csv", row.names = FALSE)
 
+xgbLinear.model <- train(imdb_score ~ ., 
+                         data = imdb.train, # Using the training set to create the model
+                         method = 'xgbLinear', # Defining the model to be k-Nearest Neighbors
+                         trControl = trainControl(method = "cv", number = 10), # Defining the resampling procedure that will be used for the model
+                         tuneGrid = expand.grid(lambda = c(.1, .01, .001),
+                                                alpha = c(.003, .05, .0001),
+                                                nrounds = 500,
+                                                eta = .025),
+                         maximize = FALSE # Ensuring that we minimize RMSE
+)
+xgbLinear.model
+
+caret.submission <- data.frame(Id = imdb.test %>% pull(movie_title), Predicted = predict(xgbTree.model, imdb.test))
+write.csv(caret.submission, "caret-preds.csv", row.names = FALSE)
+
 # The train and test data must be the exact same in terms of number of columns and order
 
 #############
@@ -110,5 +125,5 @@ xgboost.submission <- data.frame(Id = test.id, Predicted = preds)
 names(xgboost.submission)[1] <- 'Id'
 write.csv(xgboost.submission, "xgboost-preds.csv", row.names = FALSE)
 
-
+usemodels::use_xgboost(imdb_score ~., data = imdb.train, prefix = 'impairment')
 
